@@ -43,18 +43,48 @@ class SparkSqlCheckRunner:
 
             source_query_raw = spark_sql_config.get("source_query", "")
             target_query_raw = spark_sql_config.get("target_query", "")
-            if not isinstance(source_query_raw, str) or not isinstance(
-                target_query_raw, str
-            ):
+            source_where_raw = spark_sql_config.get("source_where", "")
+            target_where_raw = spark_sql_config.get("target_where", "")
+
+            if not isinstance(source_query_raw, str) or not isinstance(target_query_raw, str):
                 raise ValueError(
                     "spark_sql_check 'source_query' and 'target_query' must be strings"
                 )
 
             source_query = source_query_raw.strip()
             target_query = target_query_raw.strip()
+            source_where = source_where_raw.strip()
+            target_where = target_where_raw.strip()
+
+            if source_where and not target_where and target_query.lower().startswith("where "):
+                target_where = target_query
+                target_query = ""
+
+            if source_where:
+                if not target_where:
+                    target_where = source_where
+                
+                source_table = f"{config['source_database']}.{config['source_table']}"
+                target_table = f"{config['target_database']}.{config['target_table']}"
+                
+                source_columns = spark.sql(f"SELECT * FROM {source_table} LIMIT 0").columns
+                target_columns = spark.sql(f"SELECT * FROM {target_table} LIMIT 0").columns
+                
+                common_cols = [col for col in source_columns if col in target_columns]
+                if not common_cols:
+                    raise ValueError(f"No common columns found between {source_table} and {target_table} for spark_sql_check")
+                
+                select_clause = ", ".join(common_cols)
+                
+                sw = f" {source_where}" if source_where and not source_where.startswith(" ") else source_where
+                tw = f" {target_where}" if target_where and not target_where.startswith(" ") else target_where
+                
+                source_query = f"SELECT {select_clause} FROM {source_table}{sw}"
+                target_query = f"SELECT {select_clause} FROM {target_table}{tw}"
+
             if not source_query or not target_query:
                 raise ValueError(
-                    "spark_sql_check requires non-empty 'source_query' and 'target_query'"
+                    "spark_sql_check requires non-empty 'source_query' and 'target_query', or 'source_where'"
                 )
 
             max_sample_rows = spark_sql_config["max_sample_rows"]
@@ -254,6 +284,8 @@ class SparkSqlCheckRunner:
                 "is_enabled": spark_sql_check,
                 "source_query": "",
                 "target_query": "",
+                "source_where": "",
+                "target_where": "",
                 "max_sample_rows": 20,
             }
 
@@ -262,6 +294,8 @@ class SparkSqlCheckRunner:
                 "is_enabled": bool(spark_sql_check.get("is_enabled", False)),
                 "source_query": spark_sql_check.get("source_query", ""),
                 "target_query": spark_sql_check.get("target_query", ""),
+                "source_where": spark_sql_check.get("source_where", ""),
+                "target_where": spark_sql_check.get("target_where", ""),
                 "max_sample_rows": self._parse_max_sample_rows(
                     spark_sql_check.get("max_sample_rows", 20)
                 ),
@@ -272,6 +306,8 @@ class SparkSqlCheckRunner:
             "is_enabled": False,
             "source_query": "",
             "target_query": "",
+            "source_where": "",
+            "target_where": "",
             "max_sample_rows": 20,
             "spark_session": None,
         }

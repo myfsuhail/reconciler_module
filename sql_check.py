@@ -30,18 +30,48 @@ class SqlCheckRunner:
 
             source_query_raw = sql_check_config.get("source_query", "")
             target_query_raw = sql_check_config.get("target_query", "")
-            if not isinstance(source_query_raw, str) or not isinstance(
-                target_query_raw, str
-            ):
+            source_where_raw = sql_check_config.get("source_where", "")
+            target_where_raw = sql_check_config.get("target_where", "")
+
+            if not isinstance(source_query_raw, str) or not isinstance(target_query_raw, str):
                 raise ValueError(
                     "sql_check 'source_query' and 'target_query' must be strings"
                 )
 
             source_query = source_query_raw.strip()
             target_query = target_query_raw.strip()
+            source_where = source_where_raw.strip()
+            target_where = target_where_raw.strip()
+
+            if source_where and not target_where and target_query.lower().startswith("where "):
+                target_where = target_query
+                target_query = ""
+
+            if source_where:
+                if not target_where:
+                    target_where = source_where
+                
+                source_table = f"{config['source_database']}.{config['source_table']}"
+                target_table = f"{config['target_database']}.{config['target_table']}"
+                
+                source_columns = self._get_column_names(self.source_connection, source_table)
+                target_columns = self._get_column_names(self.target_connection, target_table)
+                
+                common_cols = [col for col in source_columns if col in target_columns]
+                if not common_cols:
+                    raise ValueError(f"No common columns found between {source_table} and {target_table} for sql_check")
+                
+                select_clause = ", ".join(common_cols)
+                
+                sw = f" {source_where}" if source_where and not source_where.startswith(" ") else source_where
+                tw = f" {target_where}" if target_where and not target_where.startswith(" ") else target_where
+                
+                source_query = f"SELECT {select_clause} FROM {source_table}{sw}"
+                target_query = f"SELECT {select_clause} FROM {target_table}{tw}"
+
             if not source_query or not target_query:
                 raise ValueError(
-                    "sql_check requires non-empty 'source_query' and 'target_query'"
+                    "sql_check requires non-empty 'source_query' and 'target_query', or 'source_where'"
                 )
 
             max_sample_rows = sql_check_config["max_sample_rows"]
@@ -100,6 +130,8 @@ class SqlCheckRunner:
                 "is_enabled": sql_check,
                 "source_query": "",
                 "target_query": "",
+                "source_where": "",
+                "target_where": "",
                 "max_sample_rows": 20,
             }
 
@@ -108,6 +140,8 @@ class SqlCheckRunner:
                 "is_enabled": bool(sql_check.get("is_enabled", False)),
                 "source_query": sql_check.get("source_query", ""),
                 "target_query": sql_check.get("target_query", ""),
+                "source_where": sql_check.get("source_where", ""),
+                "target_where": sql_check.get("target_where", ""),
                 "max_sample_rows": self._parse_max_sample_rows(
                     sql_check.get("max_sample_rows", 20)
                 ),
@@ -117,6 +151,8 @@ class SqlCheckRunner:
             "is_enabled": False,
             "source_query": "",
             "target_query": "",
+            "source_where": "",
+            "target_where": "",
             "max_sample_rows": 20,
         }
 
@@ -187,3 +223,22 @@ class SqlCheckRunner:
             "status": "skipped",
             "message": "SQL check disabled",
         }
+
+    def _get_column_names(self, connection: Any, full_table_name: str) -> list[str]:
+        """Get column names from table."""
+        query = f"SELECT * FROM {full_table_name} LIMIT 0"
+        logger.info(f"Fetching column names from {full_table_name}")
+
+        if hasattr(connection, "connection") and hasattr(connection.connection, "cursor"):
+            cursor = connection.connection.cursor()
+            try:
+                cursor.execute(query)
+                return [desc[0] for desc in cursor.description]
+            finally:
+                cursor.close()
+        else:
+            query_limit_1 = f"SELECT * FROM {full_table_name} LIMIT 1"
+            res = connection.execute(query_limit_1)
+            if res and len(res) > 0:
+                return list(res[0].keys())
+            return []
