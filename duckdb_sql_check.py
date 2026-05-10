@@ -1,20 +1,34 @@
 """
-DuckDB SQL result-set comparison validation for local/EC2 SMUS.
+Result-set comparison validation for full row-by-row data diff.
+
+Design note: this runner is connection-agnostic. The caller supplies
+``source_connection`` and ``target_connection`` objects that implement
+``.execute(sql) -> list[dict]``. A DuckDB-backed connection (``DuckDBConnection``
+in the sample notebooks) is the primary intended usage, but any connection
+returning ``list[dict]`` will work.
 """
 
+import json
 import logging
+from collections import Counter
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class DuckDBSqlCheckRunner:
-    """Runs user-provided source and target SQL queries using DuckDB and compares results."""
+    """Runs user-provided source and target SQL queries and compares result-sets row by row.
+
+    The runner fetches all rows from both sides into memory and performs a
+    duplicate-aware, order-insensitive multiset comparison using
+    ``collections.Counter``. It mirrors the ``SqlCheckRunner`` contract.
+    """
 
     def __init__(self, source_connection: Any, target_connection: Any):
         self.source_connection = source_connection
         self.target_connection = target_connection
 
     def run(self, configs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Run DuckDB SQL checks for each table configuration."""
         results = []
         for config in configs:
             duckdb_sql_config = self._normalize_config(config.get("duckdb_sql_check", False))
@@ -92,12 +106,13 @@ class DuckDBSqlCheckRunner:
             "max_sample_rows": 20,
         }
 
-    def _compare_rows(self, source_rows: list[dict], target_rows: list[dict], max_sample_rows: int) -> dict[str, Any]:
-        from collections import Counter
-        import json
-        def canonical_row(row):
+    def _compare_rows(
+        self, source_rows: list[dict], target_rows: list[dict], max_sample_rows: int
+    ) -> dict[str, Any]:
+        def canonical_row(row: dict) -> str:
             normalized = {str(key).lower(): self._normalize_value(value) for key, value in row.items()}
             return json.dumps(normalized, sort_keys=True, default=str)
+
         source_counter = Counter(canonical_row(row) for row in source_rows)
         target_counter = Counter(canonical_row(row) for row in target_rows)
         missing_counter = source_counter - target_counter
@@ -108,9 +123,12 @@ class DuckDBSqlCheckRunner:
             "missing_in_target_sample": self._sample_rows(missing_counter, max_sample_rows),
             "extra_in_target_sample": self._sample_rows(extra_counter, max_sample_rows),
         }
-    def _sample_rows(self, row_counter, max_sample_rows):
-        import json
-        samples = []
+    def _sample_rows(
+        self, row_counter: Counter, max_sample_rows: int
+    ) -> list[dict[str, Any]]:
+        if max_sample_rows == 0:
+            return []
+        samples: list[dict[str, Any]] = []
         for row_json, count in row_counter.items():
             row = json.loads(row_json)
             row["_difference_count"] = count
@@ -131,7 +149,8 @@ class DuckDBSqlCheckRunner:
         if parsed < 0:
             raise ValueError("duckdb_sql_check max_sample_rows must be >= 0")
         return parsed
-    def _skip_result(self, config, duckdb_sql_config):
+    def _skip_result(self, config: dict, duckdb_sql_config: dict) -> dict:
+        """Generate result for skipped check."""
         return {
             "source_database": config["source_database"],
             "source_table": config["source_table"],
