@@ -186,7 +186,7 @@ class ValidationRunner(RunnerConfigMixin, RunnerTableGuardMixin, RunnerOutputMix
         validations = self._extract_validations(config)
         checks: list[dict[str, Any]] = []
 
-        query_only_types = {"sql_check", "spark_sql_check"}
+        query_only_types = {"sql_check", "spark_sql_check", "duckdb_sql_check"}
         needs_table_guard = any(
             v["type"] not in query_only_types
             and bool(v["config"].get("is_enabled", False))
@@ -498,6 +498,17 @@ class ValidationRunner(RunnerConfigMixin, RunnerTableGuardMixin, RunnerOutputMix
                     and check["status"] != "skipped"
                 ):
                     print(f"   Engine: {check.get('execution_engine', 'spark')}")
+                    print(
+                        f"   Source rows: {check.get('source_row_count')}, Target rows: {check.get('target_row_count')}"
+                    )
+                    print(
+                        f"   Missing in target: {check.get('missing_in_target_count')}, Extra in target: {check.get('extra_in_target_count')}"
+                    )
+
+                elif (
+                    check["check_type"] == "duckdb_sql_check"
+                    and check["status"] != "skipped"
+                ):
                     print(
                         f"   Source rows: {check.get('source_row_count')}, Target rows: {check.get('target_row_count')}"
                     )
