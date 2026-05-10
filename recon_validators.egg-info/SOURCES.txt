@@ -4,6 +4,7 @@ column_datatype_check.py
 column_name_check.py
 connections.py
 count_check.py
+duckdb_sql_check.py
 length_check.py
 not_null_check.py
 pyproject.toml
@@ -20,6 +21,7 @@ unique_check.py
 ./column_name_check.py
 ./connections.py
 ./count_check.py
+./duckdb_sql_check.py
 ./length_check.py
 ./not_null_check.py
 ./runner.py
