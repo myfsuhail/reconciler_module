@@ -92,6 +92,11 @@ class JDBCImpalaConnection:
 
         cursor = self.connection.cursor()
         try:
+            cursor.arraysize = 25000
+        except Exception:
+            pass
+            
+        try:
             cursor.execute(sql)
             if cursor.description is None:
                 return []
@@ -132,13 +137,15 @@ class AthenaConnection:
         """Establish Athena connection"""
         try:
             from pyathena import connect
+            from pyathena.arrow.cursor import ArrowCursor
 
             self.connection = connect(
                 region_name=self.region_name,
                 s3_staging_dir=self.s3_staging_dir,
                 work_group=self.workgroup,
+                cursor_class=ArrowCursor,
             )
-            logger.info("✓ Connected to Athena/Glue")
+            logger.info("✓ Connected to Athena/Glue using ArrowCursor")
         except ImportError:
             logger.error("pyathena not installed. Run: pip install pyathena")
             raise
@@ -162,6 +169,14 @@ class AthenaConnection:
         cursor = self.connection.cursor()
         try:
             cursor.execute(sql)
+            
+            if hasattr(cursor, "as_arrow"):
+                arrow_table = cursor.as_arrow()
+                if arrow_table is None:
+                    return []
+                return arrow_table.to_pylist()
+
+            # Fallback if ArrowCursor isn't used
             if cursor.description is None:
                 return []
             columns = [desc[0] for desc in cursor.description]
