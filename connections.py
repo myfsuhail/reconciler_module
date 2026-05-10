@@ -92,7 +92,7 @@ class JDBCImpalaConnection:
 
         cursor = self.connection.cursor()
         try:
-            cursor.arraysize = 25000
+            cursor.arraysize = 10000
         except Exception:
             pass
             
@@ -101,8 +101,20 @@ class JDBCImpalaConnection:
             if cursor.description is None:
                 return []
             columns = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
+            
+            all_rows = []
+            chunk_size = getattr(cursor, "arraysize", 10000)
+            
+            while True:
+                chunk = cursor.fetchmany(chunk_size)
+                if not chunk:
+                    break
+                
+                chunk_len = len(chunk)
+                all_rows.extend([dict(zip(columns, row)) for row in chunk])
+                logger.info(f"{chunk_len} readed with total {len(all_rows)}")
+                
+            return all_rows
         finally:
             cursor.close()
 
