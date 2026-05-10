@@ -125,6 +125,90 @@ class JDBCImpalaConnection:
             logger.info("✓ Impala connection closed")
 
 
+class ImpylaConnection:
+    """Lightweight native Python connection for Impala using impyla (bypasses Java/JDBC)"""
+
+    def __init__(self, host: str, port: int, username: str, password: str, use_ssl: bool = True):
+        """
+        Initialize native Impala connection
+        
+        Args:
+            host: Impala daemon hostname
+            port: Impala daemon port (usually 21050)
+            username: LDAP username
+            password: Password for authentication
+            use_ssl: Whether to use SSL/TLS
+        """
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.use_ssl = use_ssl
+        self.connection = None
+        self._connect()
+
+    def _connect(self):
+        """Establish native connection via Thrift"""
+        try:
+            from impala.dbapi import connect
+            
+            self.connection = connect(
+                host=self.host,
+                port=self.port,
+                user=self.username,
+                password=self.password,
+                auth_mechanism='LDAP',
+                use_ssl=self.use_ssl
+            )
+            logger.info("✓ Connected to Impala natively via impyla")
+        except ImportError:
+            logger.error("impyla not installed. Run: pip install impyla thrift_sasl")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to connect to Impala natively: {e}")
+            raise
+
+    def execute(self, sql: str) -> list[dict]:
+        """
+        Execute SQL query and return results as list of dicts.
+        Uses fetchmany for progress logging.
+        """
+        if not self.connection:
+            raise ConnectionError("Not connected to Impala")
+
+        cursor = self.connection.cursor()
+        try:
+            # Impyla cursor usually defaults arraysize to 10000 or similar
+            cursor.arraysize = 10000
+            
+            cursor.execute(sql)
+            if cursor.description is None:
+                return []
+            columns = [desc[0] for desc in cursor.description]
+            
+            all_rows = []
+            chunk_size = getattr(cursor, "arraysize", 10000)
+            
+            while True:
+                chunk = cursor.fetchmany(chunk_size)
+                if not chunk:
+                    break
+                
+                chunk_len = len(chunk)
+                all_rows.extend([dict(zip(columns, row)) for row in chunk])
+                logger.info(f"{chunk_len} readed with total {len(all_rows)} via native impyla")
+                
+            return all_rows
+        finally:
+            cursor.close()
+
+    def close(self):
+        """Close connection"""
+        if self.connection:
+            self.connection.close()
+            logger.info("✓ Native Impala connection closed")
+
+
 class AthenaConnection:
     """Lightweight connection for AWS Athena/Glue"""
 

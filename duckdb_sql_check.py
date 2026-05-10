@@ -147,38 +147,75 @@ class DuckDBSqlCheckRunner:
     def _compare_rows(
         self, source_rows: list[dict], target_rows: list[dict], max_sample_rows: int
     ) -> dict[str, Any]:
-        def canonical_row(row: dict) -> str:
-            normalized = {str(key).lower(): self._normalize_value(value) for key, value in row.items()}
-            return json.dumps(normalized, sort_keys=True, default=str)
+        import duckdb
+        import pyarrow as pa
+        import os
+        
+        # Fast exit for empty datasets
+        if not source_rows and not target_rows:
+            return {
+                "missing_in_target_count": 0,
+                "extra_in_target_count": 0,
+                "missing_in_target_sample": [],
+                "extra_in_target_sample": [],
+            }
 
-        source_counter = Counter(canonical_row(row) for row in source_rows)
-        target_counter = Counter(canonical_row(row) for row in target_rows)
-        missing_counter = source_counter - target_counter
-        extra_counter = target_counter - source_counter
+        # 1. Convert lists directly into PyArrow Tables (orders of magnitude faster than pandas)
+        source_table = pa.Table.from_pylist(source_rows) if source_rows else None
+        target_table = pa.Table.from_pylist(target_rows) if target_rows else None
+        
+        # Align schemas to prevent DuckDB errors if one side is entirely empty
+        if source_table is None and target_table is not None:
+            source_table = pa.schema(target_table.schema).empty_table()
+        elif target_table is None and source_table is not None:
+            target_table = pa.schema(source_table.schema).empty_table()
+
+        # 2. Spin up DuckDB in memory
+        con = duckdb.connect(database=':memory:')
+        
+        # Enable the semi-approach (spill to disk) for massive datasets (50M+ rows)
+        # This guarantees it won't crash your notebook if RAM fills up.
+        os.makedirs('/tmp/duckdb_spill', exist_ok=True)
+        con.execute("PRAGMA temp_directory='/tmp/duckdb_spill'")
+        
+        # Register PyArrow tables as virtual DuckDB tables natively
+        con.register('src_raw', source_table)
+        con.register('tgt_raw', target_table)
+        
+        # Cast all columns to VARCHAR dynamically to prevent type mismatch errors between Impala/Athena
+        src_cols = ", ".join([f'CAST("{c}" AS VARCHAR) AS "{c.lower()}"' for c in source_table.schema.names])
+        tgt_cols = ", ".join([f'CAST("{c}" AS VARCHAR) AS "{c.lower()}"' for c in target_table.schema.names])
+        
+        # 3. Perform multiset differences using EXCEPT ALL
+        missing_query = f"SELECT {src_cols} FROM src_raw EXCEPT ALL SELECT {tgt_cols} FROM tgt_raw"
+        extra_query = f"SELECT {tgt_cols} FROM tgt_raw EXCEPT ALL SELECT {src_cols} FROM src_raw"
+        
+        missing_count = con.execute(f"SELECT COUNT(*) FROM ({missing_query})").fetchone()[0]
+        extra_count = con.execute(f"SELECT COUNT(*) FROM ({extra_query})").fetchone()[0]
+        
+        missing_sample = []
+        extra_sample = []
+        
+        if max_sample_rows > 0:
+            if missing_count > 0:
+                missing_arrow = con.execute(
+                    f"SELECT *, COUNT(*) as _difference_count FROM ({missing_query}) GROUP BY ALL LIMIT {max_sample_rows}"
+                ).fetch_arrow_table()
+                missing_sample = missing_arrow.to_pylist()
+                
+            if extra_count > 0:
+                extra_arrow = con.execute(
+                    f"SELECT *, COUNT(*) as _difference_count FROM ({extra_query}) GROUP BY ALL LIMIT {max_sample_rows}"
+                ).fetch_arrow_table()
+                extra_sample = extra_arrow.to_pylist()
+        
         return {
-            "missing_in_target_count": sum(missing_counter.values()),
-            "extra_in_target_count": sum(extra_counter.values()),
-            "missing_in_target_sample": self._sample_rows(missing_counter, max_sample_rows),
-            "extra_in_target_sample": self._sample_rows(extra_counter, max_sample_rows),
+            "missing_in_target_count": int(missing_count),
+            "extra_in_target_count": int(extra_count),
+            "missing_in_target_sample": missing_sample,
+            "extra_in_target_sample": extra_sample,
         }
-    def _sample_rows(
-        self, row_counter: Counter, max_sample_rows: int
-    ) -> list[dict[str, Any]]:
-        if max_sample_rows == 0:
-            return []
-        samples: list[dict[str, Any]] = []
-        for row_json, count in row_counter.items():
-            row = json.loads(row_json)
-            row["_difference_count"] = count
-            samples.append(row)
-            if len(samples) >= max_sample_rows:
-                break
-        return samples
-    @staticmethod
-    def _normalize_value(value):
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        return str(value)
+
     @staticmethod
     def _parse_max_sample_rows(value):
         if value in (None, ""):

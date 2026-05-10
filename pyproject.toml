@@ -19,7 +19,10 @@ dependencies = [
   "botocore==1.37.2",
   "s3transfer==0.11.3",
   "duckdb",
-  "pyarrow>=10.0.0"
+  "pyarrow>=10.0.0",
+  "impyla>=0.18.0",
+  "thrift_sasl>=0.4.3",
+  "bitarray>=2.0.0"
 ]
 
 [tool.setuptools]
