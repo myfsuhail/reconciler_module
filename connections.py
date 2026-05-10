@@ -128,39 +128,65 @@ class JDBCImpalaConnection:
 class ImpylaConnection:
     """Lightweight native Python connection for Impala using impyla (bypasses Java/JDBC)"""
 
-    def __init__(self, host: str, port: int, username: str, password: str, use_ssl: bool = True):
+    def __init__(self, host: str, port: int, username: str = None, password: str = None, 
+                 use_ssl: bool = True, auth_mechanism: str = 'LDAP', kerberos_service_name: str = 'impala',
+                 keytab_path: str = None, kerberos_principal: str = None):
         """
         Initialize native Impala connection
         
         Args:
             host: Impala daemon hostname
             port: Impala daemon port (usually 21050)
-            username: LDAP username
+            username: LDAP username (not needed for Kerberos if ticket exists)
             password: Password for authentication
             use_ssl: Whether to use SSL/TLS
+            auth_mechanism: 'LDAP', 'GSSAPI' (Kerberos), or 'PLAIN'
+            kerberos_service_name: Service name for Kerberos (default 'impala')
+            keytab_path: Path to keytab file for automatic kinit
+            kerberos_principal: Principal name for automatic kinit (e.g. user@REALM.COM)
         """
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.use_ssl = use_ssl
+        self.auth_mechanism = auth_mechanism
+        self.kerberos_service_name = kerberos_service_name
+        self.keytab_path = keytab_path
+        self.kerberos_principal = kerberos_principal
         self.connection = None
         self._connect()
 
     def _connect(self):
         """Establish native connection via Thrift"""
         try:
+            import subprocess
             from impala.dbapi import connect
             
-            self.connection = connect(
-                host=self.host,
-                port=self.port,
-                user=self.username,
-                password=self.password,
-                auth_mechanism='LDAP',
-                use_ssl=self.use_ssl
-            )
-            logger.info("✓ Connected to Impala natively via impyla")
+            # Auto-kinit if keytab provided
+            if self.auth_mechanism == 'GSSAPI' and self.keytab_path and self.kerberos_principal:
+                try:
+                    subprocess.run(["kinit", "-kt", self.keytab_path, self.kerberos_principal], check=True)
+                    logger.info(f"Successfully authenticated using kinit for {self.kerberos_principal}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to authenticate with kinit: {e}")
+                    raise RuntimeError(f"Kerberos kinit failed: {e}")
+            
+            kwargs = {
+                'host': self.host,
+                'port': self.port,
+                'auth_mechanism': self.auth_mechanism,
+                'use_ssl': self.use_ssl
+            }
+            
+            if self.auth_mechanism == 'LDAP':
+                kwargs['user'] = self.username
+                kwargs['password'] = self.password
+            elif self.auth_mechanism == 'GSSAPI':
+                kwargs['kerberos_service_name'] = self.kerberos_service_name
+            
+            self.connection = connect(**kwargs)
+            logger.info(f"✓ Connected to Impala natively via impyla ({self.auth_mechanism})")
         except ImportError:
             logger.error("impyla not installed. Run: pip install impyla thrift_sasl")
             raise
