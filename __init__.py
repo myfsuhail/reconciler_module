@@ -5,6 +5,7 @@ Recon Validators - Lightweight data validation framework
 from .count_check import CountCheckRunner
 from .column_name_check import ColumnNameCheckRunner
 from .column_datatype_check import ColumnDatatypeCheckRunner
+from .duckdb_sql_check import DuckDBSqlCheckRunner
 from .length_check import LengthCheckRunner
 from .not_null_check import NotNullCheckRunner
 from .runner import ValidationRunner
@@ -21,6 +22,7 @@ __all__ = [
     "ColumnNameCheckRunner",
     "ConnectionManager",
     "CountCheckRunner",
+    "DuckDBSqlCheckRunner",
     "JDBCImpalaConnection",
     "LengthCheckRunner",
     "NotNullCheckRunner",
