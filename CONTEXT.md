@@ -9,14 +9,18 @@ It is intended for data migration, ingestion validation, and post-load quality a
 ## Typical runtime
 
 - Source: Impala via JDBC (`jaydebeapi` + `JPype1`)
-- Target: Athena (`pyathena`)
+- Target: AWS Glue Iceberg tables through Athena (`pyathena`)
 - Execution: notebook or script in development, wheel in SageMaker for production-style use
+
+Primary migration scenario:
+- Reconcile migrated objects from Impala to AWS Glue Iceberg in SMUS/Glue environments.
 
 ## Execution boundaries
 
 What this repository does:
 - run query-based validation checks
 - aggregate structured results
+- support row-to-row query result comparison using `sql_check`, `spark_sql_check`, or `duckdb_sql_check`
 - save output JSON to file system today
 - reserve output extension points for Postgres and Snowflake
 

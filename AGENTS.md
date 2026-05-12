@@ -68,6 +68,7 @@ Agents must avoid:
 - `recon_type="dq"` enforces the same basic checks and also runs explicit DQ checks in the config.
 - `sql_check` is explicit only and compares user-provided source/target query results.
 - `spark_sql_check` is explicit only and compares user-provided source/target query results with Spark SQL.
+- `duckdb_sql_check` is explicit only and compares user-provided source/target query results with DuckDB-backed set semantics.
 - For compact table specs, `source:target(skip_col1, skip_col2)` applies skip columns to both column-name and datatype checks.
 - Duplicate `tables_list` entries are intentionally executed as provided.
 

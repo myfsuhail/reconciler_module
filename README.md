@@ -4,8 +4,11 @@ Lightweight, configuration-driven data reconciliation toolkit focused on validat
 
 Current implementation is optimized for:
 - Source: Impala via JDBC
-- Target: Athena via PyAthena
+- Target: AWS Glue Iceberg tables queried via Athena (PyAthena)
 - Runtime: notebook/script development, then wheel-based reuse in SageMaker
+
+Primary use case:
+- Reconcile migrated objects from Impala and AWS Glue Iceberg tables in SMUS/Glue.
 
 ---
 
@@ -51,12 +54,17 @@ Per table, you can enable/disable each check:
 	- Runs user-provided source and target SQL queries through Spark SQL.
 	- Compares large result sets using distributed Spark compute (SMUS/Glue friendly).
 
+9. **DuckDB SQL check** (`duckdb_sql_check`)
+	- Runs user-provided source and target SQL queries.
+	- Compares full result sets using DuckDB `EXCEPT ALL` semantics for duplicate-aware row-to-row reconciliation.
+
 ---
 
 ## 3) Repository layout
 
 - `connections.py`
   - `JDBCImpalaConnection`
+	- `ImpylaConnection` (supports TLS monkey patch and auth fallback)
   - `AthenaConnection`
   - `ConnectionManager`
 - `runner.py`
@@ -75,6 +83,7 @@ Per table, you can enable/disable each check:
 - `unique_check.py`
 - `sql_check.py`
 - `spark_sql_check.py`
+- `duckdb_sql_check.py`
 - `test_connections.ipynb` (local integration notebook)
 
 ---
@@ -111,10 +120,11 @@ Supported `type` values:
 - `unique_check`
 - `sql_check`
 - `spark_sql_check`
+- `duckdb_sql_check`
 
 Default behavior when validation is omitted:
 - Enabled by default: `count_check`, `column_name_check`, `column_datatype_check`
-- Disabled by default: `length_check`, `not_null_check`, `unique_check`, `sql_check`, `spark_sql_check`
+- Disabled by default: `length_check`, `not_null_check`, `unique_check`, `sql_check`, `spark_sql_check`, `duckdb_sql_check`
 
 ### Legacy explicit config
 
@@ -149,6 +159,13 @@ table_configs = [
 				"is_enabled": False,
 				"source_query": "SELECT order_id FROM src_db.orders WHERE status = 'ACTIVE'",
 				"target_query": "SELECT order_id FROM tgt_db.orders WHERE status = 'ACTIVE'",
+				"max_sample_rows": 20,
+		  },
+		  "duckdb_sql_1": {
+				"type": "duckdb_sql_check",
+				"is_enabled": False,
+				"source_query": "SELECT order_id, status FROM src_db.orders WHERE status = 'ACTIVE'",
+				"target_query": "SELECT order_id, status FROM tgt_db.orders WHERE status = 'ACTIVE'",
 				"max_sample_rows": 20,
 		  },
 	 }
@@ -232,6 +249,8 @@ table_configs = [
 
 `spark_sql_check` uses the same multiset comparison semantics, but executes with Spark SQL for scalable distributed comparison in SMUS/Glue environments.
 
+`duckdb_sql_check` also supports duplicate-aware row-to-row query validation and can be useful when comparing large query outputs with DuckDB-powered set operations.
+
 ---
 
 ## 6) Typical usage
@@ -263,6 +282,24 @@ runner.print_summary(results)
 runner.save_to_json(results, output_dir="validation_results")
 
 manager.close_all()
+```
+
+### Optional native Impala connection (Impyla + monkey patch)
+
+```python
+from connections import ImpylaConnection
+
+source_conn = ImpylaConnection(
+	host="peanut-impala.cargill.com",
+	port=21050,
+	username="<username>",
+	password="<password>",
+	use_ssl=True,
+	ca_cert="/path/to/truststore.cargill.pem",
+	auth_mechanisms=["LDAP", "PLAIN"],
+	patch_ssl_socket=True,
+	tls_preflight=True,
+)
 ```
 
 ---
@@ -375,14 +412,14 @@ From repository root:
 
 Use AWS CLI:
 
-- `aws s3 cp dist/recon_validators-0.1.0-py3-none-any.whl s3://<your-bucket>/<path>/`
+- `aws s3 cp dist/recon_validators-0.1.1-py3-none-any.whl s3://<your-bucket>/<path>/`
 
 ### C) Install in SageMaker / SMUS notebook
 
 In a notebook cell:
 
 ```python
-%pip install --no-cache-dir "s3://<your-bucket>/<path>/recon_validators-0.1.0-py3-none-any.whl"
+%pip install --no-cache-dir "s3://<your-bucket>/<path>/recon_validators-0.1.1-py3-none-any.whl"
 ```
 
 Then import:
@@ -391,6 +428,7 @@ Then import:
 from recon_validators import (
 	 AthenaConnection,
 	 ConnectionManager,
+	 ImpylaConnection,
 	 JDBCImpalaConnection,
 	 ValidationRunner,
 )

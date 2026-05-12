@@ -12,9 +12,9 @@ from .runner import ValidationRunner
 from .spark_sql_check import SparkSqlCheckRunner
 from .sql_check import SqlCheckRunner
 from .unique_check import UniqueCheckRunner
-from .connections import AthenaConnection, ConnectionManager, JDBCImpalaConnection
+from .connections import AthenaConnection, ConnectionManager, ImpylaConnection, JDBCImpalaConnection
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "AthenaConnection",
@@ -23,6 +23,7 @@ __all__ = [
     "ConnectionManager",
     "CountCheckRunner",
     "DuckDBSqlCheckRunner",
+    "ImpylaConnection",
     "JDBCImpalaConnection",
     "LengthCheckRunner",
     "NotNullCheckRunner",

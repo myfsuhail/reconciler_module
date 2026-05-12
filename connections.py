@@ -3,8 +3,11 @@ Lightweight database connection module for Impala (JDBC) and Athena/Glue
 """
 
 import logging
+import os
+import socket
+import ssl
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +95,7 @@ class JDBCImpalaConnection:
 
         cursor = self.connection.cursor()
         try:
-            cursor.arraysize = 10000
+            cursor.arraysize = 25000
         except Exception:
             pass
             
@@ -103,7 +106,7 @@ class JDBCImpalaConnection:
             columns = [desc[0] for desc in cursor.description]
             
             all_rows = []
-            chunk_size = getattr(cursor, "arraysize", 10000)
+            chunk_size = getattr(cursor, "arraysize", 25000)
             
             while True:
                 chunk = cursor.fetchmany(chunk_size)
@@ -128,9 +131,24 @@ class JDBCImpalaConnection:
 class ImpylaConnection:
     """Lightweight native Python connection for Impala using impyla (bypasses Java/JDBC)"""
 
-    def __init__(self, host: str, port: int, username: str = None, password: str = None, 
-                 use_ssl: bool = True, auth_mechanism: str = 'LDAP', kerberos_service_name: str = 'impala',
-                 keytab_path: str = None, kerberos_principal: str = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str = None,
+        password: str = None,
+        use_ssl: bool = True,
+        auth_mechanism: str = "LDAP",
+        kerberos_service_name: str = "impala",
+        keytab_path: str = None,
+        kerberos_principal: str = None,
+        ca_cert: str = None,
+        ssl_ciphers: str = "DEFAULT:@SECLEVEL=1",
+        patch_ssl_socket: bool = True,
+        tls_preflight: bool = True,
+        auth_mechanisms: list[str] = None,
+        timeout: int = 30,
+    ):
         """
         Initialize native Impala connection
         
@@ -144,6 +162,12 @@ class ImpylaConnection:
             kerberos_service_name: Service name for Kerberos (default 'impala')
             keytab_path: Path to keytab file for automatic kinit
             kerberos_principal: Principal name for automatic kinit (e.g. user@REALM.COM)
+            ca_cert: Optional PEM file path for TLS validation
+            ssl_ciphers: SSL cipher override for Java8-compatible runtimes
+            patch_ssl_socket: Apply impyla thrift socket monkey patch for custom SSL context
+            tls_preflight: Perform a TLS handshake probe before connecting
+            auth_mechanisms: Optional auth fallback order (e.g. ['LDAP', 'PLAIN'])
+            timeout: Connection timeout in seconds
         """
         self.host = host
         self.port = port
@@ -154,8 +178,63 @@ class ImpylaConnection:
         self.kerberos_service_name = kerberos_service_name
         self.keytab_path = keytab_path
         self.kerberos_principal = kerberos_principal
+        self.ca_cert = str(Path(ca_cert).expanduser().resolve()) if ca_cert else None
+        self.ssl_ciphers = ssl_ciphers
+        self.patch_ssl_socket = patch_ssl_socket
+        self.tls_preflight = tls_preflight
+        self.auth_mechanisms = auth_mechanisms or [auth_mechanism]
+        self.timeout = timeout
         self.connection = None
         self._connect()
+
+    def _patch_impyla_ssl_socket(self):
+        """Monkey patch impyla thrift socket creation with custom SSL context."""
+        from impala import _thrift_api
+        from impala import hiveserver2 as _hs2
+        from thrift.transport.TSocket import TSocket
+        from thrift.transport.TSSLSocket import TSSLSocket
+
+        ca_cert = self.ca_cert
+        ssl_ciphers = self.ssl_ciphers
+
+        class ImpalaCompatTSSLSocket(TSSLSocket):
+            def isOpen(self):
+                return self.handle is not None
+
+        def compat_get_socket(host, port, use_ssl, cert_file):
+            if not use_ssl:
+                return TSocket(host, port)
+
+            effective_ca = cert_file or ca_cert
+            context = ssl.create_default_context(cafile=effective_ca)
+            context.set_ciphers(ssl_ciphers)
+
+            return ImpalaCompatTSSLSocket(
+                host,
+                port,
+                ssl_context=context,
+                server_hostname=host,
+                validate_callback=lambda cert, hostname: None,
+            )
+
+        _thrift_api.get_socket = compat_get_socket
+        _hs2.get_socket = compat_get_socket
+
+    def _tls_preflight(self):
+        """Verify TLS handshake independently before opening impyla connection."""
+        if not self.ca_cert:
+            logger.warning("Skipping TLS preflight because ca_cert is not configured")
+            return
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.load_verify_locations(cafile=self.ca_cert)
+        context.set_ciphers(self.ssl_ciphers)
+
+        with socket.create_connection((self.host, self.port), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=self.host) as tls_sock:
+                logger.info("TLS preflight succeeded using %s", tls_sock.version())
 
     def _connect(self):
         """Establish native connection via Thrift"""
@@ -164,29 +243,65 @@ class ImpylaConnection:
             from impala.dbapi import connect
             
             # Auto-kinit if keytab provided
-            if self.auth_mechanism == 'GSSAPI' and self.keytab_path and self.kerberos_principal:
+            if (
+                "GSSAPI" in self.auth_mechanisms
+                and self.keytab_path
+                and self.kerberos_principal
+            ):
                 try:
-                    subprocess.run(["kinit", "-kt", self.keytab_path, self.kerberos_principal], check=True)
-                    logger.info(f"Successfully authenticated using kinit for {self.kerberos_principal}")
+                    subprocess.run(
+                        ["kinit", "-kt", self.keytab_path, self.kerberos_principal],
+                        check=True,
+                    )
+                    logger.info(
+                        "Successfully authenticated using kinit for principal"
+                    )
                 except subprocess.CalledProcessError as e:
                     logger.error(f"Failed to authenticate with kinit: {e}")
                     raise RuntimeError(f"Kerberos kinit failed: {e}")
+
+            if self.use_ssl and self.tls_preflight:
+                self._tls_preflight()
+
+            if self.use_ssl and self.patch_ssl_socket:
+                self._patch_impyla_ssl_socket()
             
-            kwargs = {
-                'host': self.host,
-                'port': self.port,
-                'auth_mechanism': self.auth_mechanism,
-                'use_ssl': self.use_ssl
-            }
-            
-            if self.auth_mechanism == 'LDAP':
-                kwargs['user'] = self.username
-                kwargs['password'] = self.password
-            elif self.auth_mechanism == 'GSSAPI':
-                kwargs['kerberos_service_name'] = self.kerberos_service_name
-            
-            self.connection = connect(**kwargs)
-            logger.info(f"✓ Connected to Impala natively via impyla ({self.auth_mechanism})")
+            last_error = None
+            for mechanism in self.auth_mechanisms:
+                kwargs = {
+                    "host": self.host,
+                    "port": self.port,
+                    "auth_mechanism": mechanism,
+                    "use_ssl": self.use_ssl,
+                    "timeout": self.timeout,
+                }
+
+                if self.use_ssl and self.ca_cert:
+                    kwargs["ca_cert"] = self.ca_cert
+
+                if mechanism in {"LDAP", "PLAIN"}:
+                    kwargs["user"] = self.username
+                    kwargs["password"] = self.password
+                elif mechanism == "GSSAPI":
+                    kwargs["kerberos_service_name"] = self.kerberos_service_name
+
+                try:
+                    self.connection = connect(**kwargs)
+                    self.auth_mechanism = mechanism
+                    logger.info(
+                        "✓ Connected to Impala natively via impyla (%s)",
+                        mechanism,
+                    )
+                    return
+                except Exception as e:
+                    last_error = e
+                    logger.warning(
+                        "Impyla connection failed with auth_mechanism=%s: %s",
+                        mechanism,
+                        e,
+                    )
+
+            raise RuntimeError(f"Failed to connect with impyla: {last_error}")
         except ImportError:
             logger.error("impyla not installed. Run: pip install impyla thrift_sasl")
             raise
@@ -204,8 +319,8 @@ class ImpylaConnection:
 
         cursor = self.connection.cursor()
         try:
-            # Impyla cursor usually defaults arraysize to 10000 or similar
-            cursor.arraysize = 10000
+            # Impyla cursor usually defaults arraysize to 25000 or similar
+            cursor.arraysize = 25000
             
             cursor.execute(sql)
             if cursor.description is None:
@@ -213,7 +328,7 @@ class ImpylaConnection:
             columns = [desc[0] for desc in cursor.description]
             
             all_rows = []
-            chunk_size = getattr(cursor, "arraysize", 10000)
+            chunk_size = getattr(cursor, "arraysize", 25000)
             
             while True:
                 chunk = cursor.fetchmany(chunk_size)
@@ -222,7 +337,7 @@ class ImpylaConnection:
                 
                 chunk_len = len(chunk)
                 all_rows.extend([dict(zip(columns, row)) for row in chunk])
-                logger.info(f"{chunk_len} readed with total {len(all_rows)} via native impyla")
+                logger.info("%s rows read; total=%s via native impyla", chunk_len, len(all_rows))
                 
             return all_rows
         finally:

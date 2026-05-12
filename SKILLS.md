@@ -43,11 +43,13 @@ When a requirement arrives, identify the impacted layer first:
 - `UniqueCheckRunner`: duplicate checks for key candidates
 - `SqlCheckRunner`: user-provided source/target SQL result-set comparison
 - `SparkSqlCheckRunner`: distributed Spark SQL result-set comparison for large datasets
+- `DuckDBSqlCheckRunner`: DuckDB-powered duplicate-aware row-to-row SQL result comparison
 
 ### Skills needed
 
 - SQL generation patterns for Impala and Athena
 - Spark SQL/DataFrame comparison patterns for distributed execution
+- DuckDB and PyArrow-based set comparison (`EXCEPT ALL`) for row-level reconciliation
 - Null-safe and empty-table-safe handling
 - Column existence and casing behavior
 - Result-set comparison semantics and sample-size controls
@@ -58,6 +60,7 @@ When a requirement arrives, identify the impacted layer first:
 - Add config normalization behavior
 - Improve mismatch diagnostics per field/constraint
 - Handle absent columns gracefully as `skipped`
+- Tune row-to-row query comparison strategy (`sql_check` vs `spark_sql_check` vs `duckdb_sql_check`) by data volume
 - Preserve status semantics and message clarity
 
 ## Config normalization layer

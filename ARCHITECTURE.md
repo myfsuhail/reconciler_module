@@ -52,6 +52,7 @@ This guide summarizes the current code structure and contracts so future AI cont
 - `unique_check.py`: single-column and composite-key duplicate checks.
 - `sql_check.py`: user-provided source/target SQL result-set comparison.
 - `spark_sql_check.py`: Spark SQL-based distributed result-set comparison for large datasets.
+- `duckdb_sql_check.py`: DuckDB-powered duplicate-aware row-to-row query result comparison.
 
 ### Connections
 
@@ -135,7 +136,14 @@ table_configs = [
 ]
 ```
 
-`sql_check` and `spark_sql_check` are explicit only; they are not part of the default `basic` checks.
+`sql_check`, `spark_sql_check`, and `duckdb_sql_check` are explicit only; they are not part of the default `basic` checks.
+
+## Primary migration use case
+
+- Source platform: Impala
+- Target platform: AWS Glue Iceberg (queried through Athena)
+- Execution environments: SMUS/Glue notebooks and SageMaker jobs
+- Typical validation suite: `count_check`, `column_name_check`, `column_datatype_check`, `not_null_check`, `unique_check`, `length_check`, and query-driven row-to-row comparison (`sql_check`, `spark_sql_check`, or `duckdb_sql_check`)
 
 ## Compact table spec parsing
 

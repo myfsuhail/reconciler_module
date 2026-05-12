@@ -49,15 +49,18 @@ Recommended packaging outcomes:
 5. Support `passed`, `failed`, and `skipped` status semantics.
 6. Support legacy explicit configs and compact `basic`/`dq` configs.
 7. Mark all checks as `skipped` when a configured table is missing in source, target, or both.
+8. Support query-driven row-to-row reconciliation for a given source/target query pair.
+9. Support Impala-to-AWS-Glue-Iceberg reconciliation workflows in SMUS/Glue/SageMaker runtime patterns.
 
 ## Config requirements
 
-- Canonical validation type names are `count_check`, `column_name_check`, `column_datatype_check`, `length_check`, `not_null_check`, `unique_check`, `sql_check`, and `spark_sql_check`.
+- Canonical validation type names are `count_check`, `column_name_check`, `column_datatype_check`, `length_check`, `not_null_check`, `unique_check`, `sql_check`, `spark_sql_check`, and `duckdb_sql_check`.
 - `count_check` replaces older count-check terminology.
 - In `basic` and `dq` modes, `count_check`, `column_name_check`, and `column_datatype_check` are enabled by default.
 - In `basic` and `dq` modes, count tolerance is forced to `0.0`.
 - `sql_check` requires non-empty `source_query` and `target_query` strings when enabled.
 - `spark_sql_check` requires non-empty `source_query` and `target_query` strings and an available Spark session when enabled.
+- `duckdb_sql_check` requires non-empty `source_query` and `target_query` strings, or `source_where` (with target filter inferred/defaulted), when enabled.
 - Compact `tables_list` entries must reject malformed table specs before validation begins.
 
 ## Output contract requirements
